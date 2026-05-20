@@ -1,5 +1,7 @@
 const { createPage, safeClose } = require('./baseScraper');
 const logger = require('../../middleware/logger');
+const config = require('../../config/env');
+const { waitForAnySelector } = require('./scraperUtils');
 
 const MYNTRA_BASE = 'https://www.myntra.com';
 
@@ -8,12 +10,11 @@ const search = async (query, options = {}) => {
   try {
     const url = `${MYNTRA_BASE}/${encodeURIComponent(query.replace(/\s+/g, '-'))}?p=${options.page || 1}`;
     await page.goto(url, { waitUntil: 'domcontentloaded' });
+    await waitForAnySelector(page, ['.product-base', '.results-base'], 12000);
 
-    await new Promise(r => setTimeout(r, 2000));
-
-    const products = await page.evaluate(() => {
+    const products = await page.evaluate((limit) => {
       const items = document.querySelectorAll('.product-base');
-      return Array.from(items).slice(0, 20).map(item => {
+      return Array.from(items).slice(0, limit).map(item => {
         const linkEl = item.querySelector('a');
         const href = linkEl?.getAttribute('href') || '';
         const brandEl = item.querySelector('.product-brand');
@@ -34,7 +35,13 @@ const search = async (query, options = {}) => {
         const price = parsePrice(priceEl?.textContent);
         const originalPrice = parsePrice(originalPriceEl?.textContent) || null;
         const ratingText = ratingEl?.textContent?.trim() || '';
-        const reviewText = reviewCountEl?.textContent?.replace(/[^\d]/g, '') || '0';
+        const parseCount = (value) => {
+          const text = String(value || '').replace(/,/g, '').trim();
+          const match = text.match(/(\d+(?:\.\d+)?)\s*([kmb])?/i);
+          if (!match) return 0;
+          const multiplier = { k: 1000, m: 1000000, b: 1000000000 }[match[2]?.toLowerCase()] || 1;
+          return Math.round(parseFloat(match[1]) * multiplier);
+        };
 
         // Extract product ID from URL
         const idMatch = href.match(/\/(\d+)\/buy$/);
@@ -48,14 +55,14 @@ const search = async (query, options = {}) => {
           originalPrice: originalPrice && originalPrice > price ? originalPrice : null,
           currency: 'INR',
           rating: ratingText ? parseFloat(ratingText) : null,
-          reviewCount: parseInt(reviewText, 10) || 0,
+          reviewCount: parseCount(reviewCountEl?.textContent),
           images: imageEl ? [imageEl.src] : [],
           url: href ? `https://www.myntra.com/${href}` : '',
           brand: brandEl?.textContent?.trim() || '',
           availability: true,
         };
       }).filter(p => p.title && p.price > 0);
-    });
+    }, config.scraping.maxResultsPerPlatform);
 
     logger.info(`Myntra: found ${products.length} products for "${query}"`);
     return products;
@@ -71,6 +78,7 @@ const getProductDetail = async (productId) => {
   const page = await createPage();
   try {
     await page.goto(`${MYNTRA_BASE}/product/${productId}`, { waitUntil: 'domcontentloaded' });
+    await waitForAnySelector(page, ['.pdp-title', '.pdp-name'], 12000);
 
     const product = await page.evaluate((pid) => {
       const brand = document.querySelector('.pdp-title')?.textContent?.trim() || '';

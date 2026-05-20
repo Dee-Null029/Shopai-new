@@ -6,11 +6,15 @@ const PLATFORM_TRUST = {
 
 const computePriceScore = (price, allPrices) => {
   if (allPrices.length <= 1) return 50;
-  const min = Math.min(...allPrices);
-  const max = Math.max(...allPrices);
+  const sorted = [...allPrices].sort((a, b) => a - b);
+  const percentile = (p) => sorted[Math.min(sorted.length - 1, Math.floor((sorted.length - 1) * p))];
+  const min = percentile(0.05);
+  const max = percentile(0.95);
   if (max === min) return 50;
+
+  const clamped = Math.max(min, Math.min(max, price));
   // Lower price = higher score
-  return Math.round(((max - price) / (max - min)) * 100);
+  return Math.round(((max - clamped) / (max - min)) * 100);
 };
 
 const computeRatingScore = (rating, reviewCount) => {
@@ -41,6 +45,9 @@ const computeReliabilityScore = (product) => {
 
   // Penalty for unavailable
   if (!product.availability) score -= 20;
+
+  // Sponsored search cards can still be valid, but the reliability signal is weaker.
+  if (product.sponsored) score -= 5;
 
   // Bonus for discount (seller confidence)
   if (product.originalPrice && product.price < product.originalPrice) {
@@ -84,16 +91,21 @@ const rankProducts = (products, weights = {}) => {
       w.sentiment * scores.sentiment +
       w.reliability * scores.reliability
     );
+    const relevanceAdjusted = Math.round(composite * (0.75 + 0.25 * (product.relevanceScore ?? 1)));
 
     return {
       ...product,
       scores,
-      compositeScore: composite,
+      compositeScore: relevanceAdjusted,
     };
   });
 
   // Sort by composite score descending
-  scored.sort((a, b) => b.compositeScore - a.compositeScore);
+  scored.sort((a, b) =>
+    b.compositeScore - a.compositeScore ||
+    (b.relevanceScore || 0) - (a.relevanceScore || 0) ||
+    (b.reviewCount || 0) - (a.reviewCount || 0)
+  );
 
   return scored;
 };

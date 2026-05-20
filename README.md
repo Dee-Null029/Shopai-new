@@ -171,6 +171,27 @@ docker compose up -d --build
 # - Redis:     localhost:6379 (internal only)
 ```
 
+### Azure VM Deployment
+
+This repo includes VM-ready deployment assets:
+
+- `AZURE_VM_DEPLOYMENT.md` - step-by-step Ubuntu VM deployment guide
+- `deploy/azure-vm/setup-ubuntu.sh` - installs Node.js, MongoDB, Redis, Nginx, PM2, and firewall rules
+- `deploy/azure-vm/deploy.sh` - installs dependencies, builds the frontend, reloads PM2, and installs Nginx config
+- `deploy/azure-vm/nginx-shopai.conf` - reverse proxy for `/api` and `/socket.io`
+- `ecosystem.config.cjs` - PM2 process config for the backend
+- `server/.env.production.example` - production environment template
+
+Quick path on an Azure Ubuntu VM:
+
+```bash
+cd /var/www/shopai
+sudo bash deploy/azure-vm/setup-ubuntu.sh
+cp server/.env.production.example server/.env
+# Edit server/.env with real secrets and ALLOWED_ORIGINS
+sudo APP_DIR=/var/www/shopai bash deploy/azure-vm/deploy.sh
+```
+
 ---
 
 ## Environment Variables
@@ -179,6 +200,8 @@ docker compose up -d --build
 | ----------------------- | -------------- | ----------------------------------------------------------- |
 | `NODE_ENV`              | No             | `development` or `production` (default: development)        |
 | `PORT`                  | No             | Server port (default: 5000)                                 |
+| `TRUST_PROXY`           | No             | Set to `true` behind Nginx/Azure reverse proxy              |
+| `ALLOWED_ORIGINS`       | Prod           | Comma-separated browser origins allowed by CORS             |
 | `MONGODB_URI`           | No             | MongoDB connection string (default: localhost:27017/shopai) |
 | `REDIS_HOST`            | No             | Redis host (default: localhost)                             |
 | `REDIS_PORT`            | No             | Redis port (default: 6379)                                  |

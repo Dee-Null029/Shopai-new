@@ -1,100 +1,195 @@
-const normalizeProduct = (raw) => ({
-  platformId: raw.platformId || '',
-  platform: raw.platform || 'unknown',
-  title: (raw.title || '').trim(),
-  price: typeof raw.price === 'number' ? raw.price : parseFloat(raw.price) || 0,
-  originalPrice: raw.originalPrice ? parseFloat(raw.originalPrice) : null,
-  currency: raw.currency || 'INR',
-  rating: raw.rating ? Math.min(parseFloat(raw.rating), 5) : null,
-  reviewCount: parseInt(raw.reviewCount, 10) || 0,
-  images: Array.isArray(raw.images) ? raw.images.filter(Boolean) : [],
-  url: raw.url || '',
-  category: raw.category || '',
-  brand: raw.brand || '',
-  seller: raw.seller || null,
-  availability: raw.availability !== false,
-  reviews: raw.reviews || [],
-});
+const { parseCount, parsePrice, parseRating } = require('./scrapers/scraperUtils');
 
-const normalizeProducts = (products) => products.map(normalizeProduct).filter(p => p.price > 0);
+const STOP_WORDS = new Set([
+  'a', 'an', 'and', 'are', 'by', 'for', 'from', 'in', 'is', 'new', 'of', 'on',
+  'or', 'the', 'to', 'with', 'women', 'mens', 'men', 'boys', 'girls',
+]);
 
-/**
- * Compute relevance score (0-1) of a product against search query.
- * Uses keyword overlap: what fraction of query words appear in the title/brand.
- */
-const computeRelevance = (product, query) => {
-  if (!query) return 1;
-  const queryWords = query.toLowerCase().split(/\s+/).filter(w => w.length > 1);
-  if (queryWords.length === 0) return 1;
-  const target = `${product.title} ${product.brand}`.toLowerCase();
-  let matched = 0;
-  for (const word of queryWords) {
-    // Use word boundary regex to avoid partial matches (e.g. "rog" in "WROGN")
-    const regex = new RegExp(`\\b${word.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\b`);
-    if (regex.test(target)) matched++;
-  }
-  return matched / queryWords.length;
+const normalizeText = (value) => String(value || '')
+  .toLowerCase()
+  .normalize('NFKD')
+  .replace(/[^\w\s.-]/g, ' ')
+  .replace(/\s+/g, ' ')
+  .trim();
+
+const compactTitle = (value) => String(value || '').replace(/\s+/g, ' ').trim();
+
+const stemToken = (token) => {
+  if (token.length > 4 && token.endsWith('ies')) return `${token.slice(0, -3)}y`;
+  if (token.length > 4 && token.endsWith('es')) return token.slice(0, -2);
+  if (token.length > 3 && token.endsWith('s')) return token.slice(0, -1);
+  return token;
 };
 
-/**
- * Filter products by relevance to query. Keeps only products where
- * at least half of the query words appear in the product title/brand.
- * Also sorts by relevance (best matches first).
- */
+const tokenize = (value) => normalizeText(value)
+  .split(/\s+/)
+  .map(stemToken)
+  .filter(token => token.length > 1 && !STOP_WORDS.has(token));
+
+const inferBrand = (raw) => {
+  if (raw.brand) return compactTitle(raw.brand);
+  const title = compactTitle(raw.title);
+  const match = title.match(/^([A-Za-z][A-Za-z0-9&.-]{1,24})\b/);
+  return match ? match[1] : '';
+};
+
+const normalizeProduct = (raw) => {
+  const price = parsePrice(raw.price);
+  const originalPrice = parsePrice(raw.originalPrice);
+  const title = compactTitle(raw.title);
+
+  return {
+    platformId: String(raw.platformId || raw.id || '').trim(),
+    platform: String(raw.platform || 'unknown').toLowerCase(),
+    title,
+    price,
+    originalPrice: originalPrice > price ? originalPrice : null,
+    currency: raw.currency || 'INR',
+    rating: parseRating(raw.rating),
+    reviewCount: parseCount(raw.reviewCount),
+    images: Array.isArray(raw.images) ? [...new Set(raw.images.filter(Boolean))] : [],
+    url: raw.url || '',
+    category: raw.category || '',
+    brand: inferBrand(raw),
+    seller: raw.seller || null,
+    availability: raw.availability !== false,
+    sponsored: raw.sponsored === true,
+    reviews: Array.isArray(raw.reviews) ? raw.reviews : [],
+  };
+};
+
+const normalizeProducts = (products) => products
+  .map(normalizeProduct)
+  .filter(product => product.title && product.price > 0 && product.url);
+
+const computeRelevance = (product, query) => {
+  if (!query) return 1;
+
+  const queryTokens = tokenize(query);
+  if (queryTokens.length === 0) return 1;
+
+  const targetTokens = new Set(tokenize(`${product.title} ${product.brand} ${product.category}`));
+  const targetText = normalizeText(`${product.title} ${product.brand} ${product.category}`);
+  const queryText = normalizeText(query);
+
+  let tokenScore = 0;
+  for (const token of queryTokens) {
+    if (targetTokens.has(token)) tokenScore += 1;
+    else if (token.length >= 4 && targetText.includes(token)) tokenScore += 0.55;
+  }
+
+  const overlapScore = tokenScore / queryTokens.length;
+  const phraseBoost = targetText.includes(queryText) ? 0.25 : 0;
+  const brandBoost = product.brand && normalizeText(product.brand) === queryTokens[0] ? 0.1 : 0;
+
+  return Math.min(1, overlapScore + phraseBoost + brandBoost);
+};
+
 const filterByRelevance = (products, query) => {
   if (!query) return products;
-  const scored = products.map(p => ({ ...p, _relevance: computeRelevance(p, query) }));
-  // Require at least 50% of query words to match
-  const threshold = 0.5;
-  const filtered = scored.filter(p => p._relevance >= threshold);
-  // Sort by relevance descending, then by reviewCount as tiebreaker
-  filtered.sort((a, b) => b._relevance - a._relevance || (b.reviewCount || 0) - (a.reviewCount || 0));
-  // Remove internal _relevance field
-  return filtered.map(({ _relevance, ...p }) => p);
+
+  const queryTokens = tokenize(query);
+  const threshold = queryTokens.length <= 1 ? 0.55 : queryTokens.length <= 3 ? 0.45 : 0.4;
+  const scored = products.map(product => ({ ...product, relevanceScore: computeRelevance(product, query) }));
+
+  return scored
+    .filter(product => product.relevanceScore >= threshold)
+    .sort((a, b) =>
+      b.relevanceScore - a.relevanceScore ||
+      Number(a.sponsored) - Number(b.sponsored) ||
+      (b.reviewCount || 0) - (a.reviewCount || 0) ||
+      (b.rating || 0) - (a.rating || 0)
+    );
 };
 
 const similarity = (a, b) => {
-  const wordsA = new Set(a.toLowerCase().split(/\s+/));
-  const wordsB = new Set(b.toLowerCase().split(/\s+/));
-  const intersection = new Set([...wordsA].filter(x => wordsB.has(x)));
+  const wordsA = new Set(tokenize(a));
+  const wordsB = new Set(tokenize(b));
+  if (wordsA.size === 0 || wordsB.size === 0) return 0;
+
+  const intersection = new Set([...wordsA].filter(word => wordsB.has(word)));
   const union = new Set([...wordsA, ...wordsB]);
-  return intersection.size / union.size; // Jaccard similarity
+  return intersection.size / union.size;
+};
+
+const productQualityScore = (product) => {
+  let score = 0;
+  if (product.images?.length) score += 10;
+  if (product.rating) score += product.rating * 10;
+  score += Math.min(product.reviewCount || 0, 1000) / 20;
+  if (product.availability) score += 10;
+  if (!product.sponsored) score += 5;
+  return score;
+};
+
+const appendVariant = (target, variant) => {
+  const existingVariants = target.variants || [];
+  const variantKey = `${variant.platform}:${variant.platformId}:${variant.price}`;
+  if (existingVariants.some(item => `${item.platform}:${item.platformId}:${item.price}` === variantKey)) return;
+
+  target.variants = [
+    ...existingVariants,
+    {
+      platform: variant.platform,
+      platformId: variant.platformId,
+      price: variant.price,
+      originalPrice: variant.originalPrice,
+      rating: variant.rating,
+      reviewCount: variant.reviewCount,
+      url: variant.url,
+    },
+  ];
+};
+
+const mergeDuplicate = (existing, candidate) => {
+  const keepCandidate = productQualityScore(candidate) > productQualityScore(existing);
+  const primary = keepCandidate ? candidate : existing;
+  const secondary = keepCandidate ? existing : candidate;
+
+  appendVariant(primary, secondary);
+  for (const variant of secondary.variants || []) appendVariant(primary, variant);
+
+  return {
+    ...primary,
+    images: [...new Set([...(primary.images || []), ...(secondary.images || [])])],
+    reviews: primary.reviews?.length ? primary.reviews : secondary.reviews,
+  };
 };
 
 const deduplicateProducts = (products) => {
   const unique = [];
-  const seen = new Set();
+  const byPlatformId = new Set();
 
   for (const product of products) {
-    const key = `${product.platform}:${product.platformId}`;
-    if (seen.has(key)) continue;
+    const platformKey = `${product.platform}:${product.platformId || product.url}`;
+    if (byPlatformId.has(platformKey)) continue;
+    byPlatformId.add(platformKey);
 
-    // Check for cross-platform duplicates (same product on different platforms)
-    const isDuplicate = unique.some(existing => {
+    const duplicateIndex = unique.findIndex(existing => {
       if (existing.platform === product.platform) return false;
-      const priceDiff = Math.abs(existing.price - product.price) / Math.max(existing.price, product.price, 1);
+
       const titleSim = similarity(existing.title, product.title);
-      return titleSim > 0.6 && priceDiff < 0.3;
+      const priceDiff = Math.abs(existing.price - product.price) / Math.max(existing.price, product.price, 1);
+      const brandMatch = existing.brand && product.brand && normalizeText(existing.brand) === normalizeText(product.brand);
+
+      return priceDiff < 0.35 && (titleSim >= 0.62 || (brandMatch && titleSim >= 0.5));
     });
 
-    if (!isDuplicate) {
-      seen.add(key);
+    if (duplicateIndex === -1) {
       unique.push(product);
     } else {
-      // Keep as variant if from different platform
-      const existing = unique.find(e =>
-        e.platform !== product.platform &&
-        similarity(e.title, product.title) > 0.6
-      );
-      if (existing && !existing.variants) {
-        existing.variants = [{ platform: product.platform, price: product.price, url: product.url, platformId: product.platformId }];
-      } else if (existing?.variants) {
-        existing.variants.push({ platform: product.platform, price: product.price, url: product.url, platformId: product.platformId });
-      }
+      unique[duplicateIndex] = mergeDuplicate(unique[duplicateIndex], product);
     }
   }
 
   return unique;
 };
 
-module.exports = { normalizeProduct, normalizeProducts, deduplicateProducts, filterByRelevance };
+module.exports = {
+  computeRelevance,
+  deduplicateProducts,
+  filterByRelevance,
+  normalizeProduct,
+  normalizeProducts,
+  similarity,
+};

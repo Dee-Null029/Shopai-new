@@ -1,5 +1,7 @@
 const { createPage, safeClose } = require('./baseScraper');
 const logger = require('../../middleware/logger');
+const config = require('../../config/env');
+const { waitForAnySelector } = require('./scraperUtils');
 
 const FLIPKART_BASE = 'https://www.flipkart.com';
 
@@ -8,6 +10,7 @@ const search = async (query, options = {}) => {
   try {
     const url = `${FLIPKART_BASE}/search?q=${encodeURIComponent(query)}&page=${options.page || 1}`;
     await page.goto(url, { waitUntil: 'domcontentloaded' });
+    await waitForAnySelector(page, ['[data-id]', '._1YokD2', '._75nlfW'], 12000);
 
     // Close login popup if present
     try {
@@ -18,11 +21,9 @@ const search = async (query, options = {}) => {
       });
     } catch {}
 
-    await new Promise(r => setTimeout(r, 2000));
-
-    const products = await page.evaluate(() => {
+    const products = await page.evaluate((limit) => {
       const items = document.querySelectorAll('[data-id]');
-      return Array.from(items).slice(0, 20).map(item => {
+      return Array.from(items).slice(0, limit).map(item => {
         const dataId = item.getAttribute('data-id');
         if (!dataId) return null;
 
@@ -31,6 +32,7 @@ const search = async (query, options = {}) => {
         if (!href) return null;
 
         const img = item.querySelector('img');
+        const sponsored = /sponsored/i.test(item.textContent || '');
 
         // Extract leaf text nodes (elements with no child elements)
         const leafTexts = [];
@@ -64,17 +66,28 @@ const search = async (query, options = {}) => {
         const brand = brandMatch ? brandMatch[1] : '';
 
         // Prices: texts starting with ₹
-        const prices = leafTexts.filter(t => t.startsWith('₹')).map(t => parseInt(t.replace(/[^\d]/g, ''), 10)).filter(n => n > 0);
+        const parseCount = (value) => {
+          const text = String(value || '').replace(/,/g, '').trim();
+          const match = text.match(/(\d+(?:\.\d+)?)\s*([kmb])?/i);
+          if (!match) return 0;
+          const multiplier = { k: 1000, m: 1000000, b: 1000000000 }[match[2]?.toLowerCase()] || 1;
+          return Math.round(parseFloat(match[1]) * multiplier);
+        };
+        const parsePrice = (value) => {
+          const match = String(value || '').replace(/,/g, '').match(/\d+(?:\.\d+)?/);
+          return match ? Math.round(parseFloat(match[0])) : 0;
+        };
+        const prices = leafTexts.filter(t => t.startsWith('₹')).map(parsePrice).filter(n => n > 0);
         const price = prices[0] || 0;
-        const originalPrice = prices[1] || null;
+        const originalPrice = prices.find(p => p > price) || null;
 
         // Rating: text matching pattern like "4.2"
-        const ratingText = leafTexts.find(t => /^\d\.\d$/.test(t));
+        const ratingText = leafTexts.find(t => /^\d(?:\.\d)?$/.test(t) && parseFloat(t) <= 5);
         const rating = ratingText ? parseFloat(ratingText) : null;
 
         // Review/rating count from texts like "31 Ratings" or "185 Ratings"
-        const ratingCountText = leafTexts.find(t => /^\d[\d,]*\s*Ratings?$/i.test(t));
-        const reviewCount = ratingCountText ? parseInt(ratingCountText.replace(/[^\d]/g, ''), 10) : 0;
+        const ratingCountText = leafTexts.find(t => /^[\d,.]+[KMB]?\s*Ratings?$/i.test(t));
+        const reviewCount = parseCount(ratingCountText);
 
         // Extract PID from href
         const pidMatch = href.match(/pid=([^&]+)/);
@@ -95,9 +108,10 @@ const search = async (query, options = {}) => {
           url: `https://www.flipkart.com${href}`,
           brand,
           availability: true,
+          sponsored,
         };
       }).filter(Boolean);
-    });
+    }, config.scraping.maxResultsPerPlatform);
 
     logger.info(`Flipkart: found ${products.length} products for "${query}"`);
     return products;
@@ -113,6 +127,7 @@ const getProductDetail = async (productId) => {
   const page = await createPage();
   try {
     await page.goto(`${FLIPKART_BASE}/product/p?pid=${productId}`, { waitUntil: 'domcontentloaded' });
+    await waitForAnySelector(page, ['.B_NuCI', '._35KyD6', 'h1'], 12000);
 
     // Close login popup
     try {
