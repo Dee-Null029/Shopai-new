@@ -1,5 +1,5 @@
 import { useState, useEffect } from 'react';
-import { useParams, Link } from 'react-router-dom';
+import { useParams, Link, useLocation } from 'react-router-dom';
 import { motion } from 'framer-motion';
 import api from '../services/api';
 import SentimentPanel from '../components/SentimentPanel';
@@ -8,11 +8,18 @@ import toast from 'react-hot-toast';
 
 const platformNames = { amazon: 'Amazon', flipkart: 'Flipkart', myntra: 'Myntra' };
 
+const getDisplayImageUrl = (image) => String(image || '')
+  .replace(/_(?:SL|SX|SY|SS|AC_[A-Z]+)\d+_/g, '_SL1000_')
+  .replace(/\/(?:32|64|128|160|256|312|416)\/(?:32|64|128|160|256|312|416)\//, '/832/832/');
+
 export default function ProductDetail() {
   const { platform, id } = useParams();
-  const [product, setProduct] = useState(null);
+  const { state } = useLocation();
+  const fallbackProduct = state?.product || null;
+  const returnTo = state?.returnTo || '/search';
+  const [product, setProduct] = useState(fallbackProduct);
   const [sentiment, setSentiment] = useState(null);
-  const [loading, setLoading] = useState(true);
+  const [loading, setLoading] = useState(!fallbackProduct);
   const [sentimentLoading, setSentimentLoading] = useState(false);
   const [selectedImage, setSelectedImage] = useState(0);
 
@@ -24,10 +31,13 @@ export default function ProductDetail() {
     setLoading(true);
     try {
       const { data } = await api.get(`/product/${platform}/${id}`);
-      setProduct(data.data);
+      const detail = data.data;
+      const hasUsableDetails = detail?.title && Number(detail.price) > 0 && detail.url;
+      if (hasUsableDetails) setProduct(detail);
+      else if (!fallbackProduct) setProduct(null);
       fetchSentiment();
     } catch {
-      toast.error('Failed to load product details');
+      if (!fallbackProduct) toast.error('Failed to load product details');
     } finally {
       setLoading(false);
     }
@@ -83,7 +93,7 @@ export default function ProductDetail() {
 
   return (
     <div className="max-w-7xl mx-auto px-4 sm:px-6 py-8">
-      <Link to="/search" className="inline-flex items-center gap-1 text-sm text-gray-500 hover:text-brand-600 mb-6">
+      <Link to={returnTo} className="inline-flex items-center gap-1 text-sm text-gray-500 hover:text-brand-600 mb-6">
         <FiArrowLeft className="w-4 h-4" /> Back to results
       </Link>
 
@@ -94,7 +104,7 @@ export default function ProductDetail() {
             <div className="aspect-square bg-gray-50 flex items-center justify-center p-8">
               {product.images?.[selectedImage] ? (
                 <img
-                  src={product.images[selectedImage]}
+                  src={getDisplayImageUrl(product.images[selectedImage])}
                   alt={product.title}
                   className="max-w-full max-h-full object-contain"
                 />
@@ -110,7 +120,7 @@ export default function ProductDetail() {
                     onClick={() => setSelectedImage(i)}
                     className={`w-16 h-16 rounded-lg overflow-hidden border-2 shrink-0 ${i === selectedImage ? 'border-brand-500' : 'border-gray-200'}`}
                   >
-                    <img src={img} alt="" className="w-full h-full object-contain" />
+                    <img src={getDisplayImageUrl(img)} alt="" className="w-full h-full object-contain" />
                   </button>
                 ))}
               </div>

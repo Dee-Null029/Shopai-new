@@ -100,7 +100,7 @@ const getProductDetail = async (asin) => {
       const reviewCountEl = document.querySelector('#acrCustomerReviewText');
       const reviewCount = parseCount(reviewCountEl?.textContent);
       const images = Array.from(document.querySelectorAll('#altImages img'))
-        .map(img => img.src?.replace(/_S[CX]\d+_/, '_SL500_') || '')
+        .map(img => img.src?.replace(/_(?:SL|SX|SY|SS|AC_[A-Z]+)\d+_/g, '_SL1000_') || '')
         .filter(src => src && !src.includes('play-button'));
       const brand = document.querySelector('#bylineInfo')?.textContent?.replace('Visit the ', '').replace(' Store', '').trim() || '';
 

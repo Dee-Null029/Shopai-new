@@ -1,4 +1,4 @@
-import { Link } from 'react-router-dom';
+import { Link, useLocation } from 'react-router-dom';
 import { motion } from 'framer-motion';
 import { FiStar, FiExternalLink } from 'react-icons/fi';
 
@@ -11,6 +11,7 @@ const platformColors = {
 const platformNames = { amazon: 'Amazon', flipkart: 'Flipkart', myntra: 'Myntra' };
 
 export default function ProductCard({ product, rank }) {
+  const location = useLocation();
   const discount = product.originalPrice
     ? Math.round(((product.originalPrice - product.price) / product.originalPrice) * 100)
     : 0;
@@ -22,7 +23,13 @@ export default function ProductCard({ product, rank }) {
       whileHover={{ y: -4 }}
       className="card group"
     >
-      <Link to={`/product/${product.platform}/${product.platformId}`}>
+      <Link
+        to={`/product/${product.platform}/${product.platformId}`}
+        state={{
+          product,
+          returnTo: `${location.pathname}${location.search}`,
+        }}
+      >
         {/* Image */}
         <div className="relative aspect-square bg-gray-100 overflow-hidden">
           {product.images?.[0] ? (

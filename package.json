@@ -1,0 +1,12 @@
+{
+  "name": "shopai",
+  "version": "1.0.0",
+  "private": true,
+  "description": "ShopAI full-stack workspace scripts",
+  "scripts": {
+    "server": "npm --prefix server run dev",
+    "client": "npm --prefix client run dev",
+    "build": "npm --prefix client run build",
+    "lint": "npm --prefix server run lint"
+  }
+}

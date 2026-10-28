@@ -20,22 +20,49 @@ export default function SearchResults() {
   const [platforms, setPlatforms] = useState(['amazon', 'flipkart', 'myntra']);
 
   useEffect(() => {
-    if (query) fetchResults();
+    if (!query) {
+      setProducts([]);
+      return;
+    }
+
+    const cacheKey = `shopai:search:${JSON.stringify({
+      query,
+      sortBy,
+      platforms,
+      useRanking,
+      weights,
+    })}`;
+
+    try {
+      const cached = JSON.parse(sessionStorage.getItem(cacheKey) || 'null');
+      if (cached && Date.now() - cached.savedAt < 10 * 60 * 1000) {
+        setProducts(cached.products || []);
+        return;
+      }
+    } catch {
+      sessionStorage.removeItem(cacheKey);
+    }
+
+    fetchResults(cacheKey);
   }, [query, sortBy, platforms, useRanking, weights]);
 
-  const fetchResults = async () => {
+  const fetchResults = async (cacheKey) => {
     setLoading(true);
     try {
       if (useRanking) {
         const { data } = await api.get('/ranking', {
           params: { q: query, wPrice: weights.price, wRating: weights.rating, wSentiment: weights.sentiment, wReliability: weights.reliability },
         });
-        setProducts(data.data.products || []);
+        const nextProducts = data.data.products || [];
+        setProducts(nextProducts);
+        sessionStorage.setItem(cacheKey, JSON.stringify({ products: nextProducts, savedAt: Date.now() }));
       } else {
         const { data } = await api.get('/search', {
           params: { q: query, sortBy, platforms: platforms.join(',') },
         });
-        setProducts(data.data.products || []);
+        const nextProducts = data.data.products || [];
+        setProducts(nextProducts);
+        sessionStorage.setItem(cacheKey, JSON.stringify({ products: nextProducts, savedAt: Date.now() }));
       }
     } catch (err) {
       toast.error('Search failed. Please try again.');

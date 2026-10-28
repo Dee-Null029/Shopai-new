@@ -8,6 +8,16 @@ const logger = require('../middleware/logger');
 
 const router = express.Router();
 
+const hasUsableDetails = (product) => (
+  product &&
+  typeof product.title === 'string' &&
+  product.title.trim().length > 3 &&
+  !/^\d+$/.test(product.title.trim()) &&
+  Number(product.price) > 0 &&
+  typeof product.url === 'string' &&
+  product.url.length > 0
+);
+
 const productSchema = z.object({
   params: z.object({
     platform: z.enum(['amazon', 'flipkart', 'myntra']),
@@ -21,7 +31,7 @@ router.get('/:platform/:id', validate(productSchema), async (req, res, next) => 
     const cacheKey = `product:${platform}:${id}`;
 
     const cached = await cache.get(cacheKey);
-    if (cached) {
+    if (hasUsableDetails(cached)) {
       return res.json({ success: true, data: cached, cached: true });
     }
 
@@ -32,7 +42,7 @@ router.get('/:platform/:id', validate(productSchema), async (req, res, next) => 
       // Scrape fresh data
       const scraped = await scrapeProductDetail(platform, id);
       
-      if (scraped && scraped.title) {
+      if (hasUsableDetails(scraped)) {
         if (product) {
           Object.assign(product, scraped);
           await product.save();
@@ -44,9 +54,11 @@ router.get('/:platform/:id', validate(productSchema), async (req, res, next) => 
             product = { ...scraped, platform, platformId: id };
           }
         }
-      } else if (!product) {
-        // Scrape returned no title - return scraped data as-is
-        product = { ...scraped, platform, platformId: id };
+      } else if (!product || !hasUsableDetails(product)) {
+        return res.status(502).json({
+          success: false,
+          message: 'Product details are temporarily unavailable from the source platform',
+        });
       }
     }
 
