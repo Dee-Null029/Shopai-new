@@ -5,7 +5,10 @@ services:
       - "5000:5000"
     env_file: ./server/.env
     environment:
-      - PUPPETEER_EXECUTABLE_PATH=/usr/bin/chromium-browser
+      PUPPETEER_EXECUTABLE_PATH: /usr/bin/chromium-browser
+      MONGODB_URI: mongodb://${MONGO_USER:-shopai}:${MONGO_PASSWORD:-changeme_in_production}@mongo:27017/shopai?authSource=admin
+      REDIS_HOST: redis
+      REDIS_PASSWORD: ${REDIS_PASSWORD:-changeme_in_production}
     depends_on:
       mongo:
         condition: service_healthy
